@@ -60,8 +60,8 @@ all: main-build
 main-build: LoraWanAPP.elf secondary-outputs
 
 # Tool invocations
-LoraWanAPP.elf LoraWanAPP.map: $(OBJS) $(USER_OBJS) C:\Users\SalemBawazir\Dropbox\Tech\ development\Embedded\ Team\SBawazir\LoraWanAPP\STM32H723ZGTX_FLASH.ld makefile objects.list $(OPTIONAL_TOOL_DEPS)
-	arm-none-eabi-gcc -o "LoraWanAPP.elf" @"objects.list" $(USER_OBJS) $(LIBS) -mcpu=cortex-m7 -T"C:\Users\SalemBawazir\Dropbox\Tech development\Embedded Team\SBawazir\LoraWanAPP\STM32H723ZGTX_FLASH.ld" --specs=nosys.specs -Wl,-Map="LoraWanAPP.map" -Wl,--gc-sections -static --specs=nano.specs -mfpu=fpv5-d16 -mfloat-abi=hard -mthumb -Wl,--start-group -lc -lm -Wl,--end-group
+LoraWanAPP.elf LoraWanAPP.map: $(OBJS) $(USER_OBJS) C:\Users\SalemBawazir\Dropbox\Tech\ development\Embedded\ Team\SBawazir\GitRepo\LoraWan-Firmware\LoraWanAPP\STM32H723ZGTX_FLASH.ld makefile objects.list $(OPTIONAL_TOOL_DEPS)
+	arm-none-eabi-gcc -o "LoraWanAPP.elf" @"objects.list" $(USER_OBJS) $(LIBS) -mcpu=cortex-m7 -T"C:\Users\SalemBawazir\Dropbox\Tech development\Embedded Team\SBawazir\GitRepo\LoraWan-Firmware\LoraWanAPP\STM32H723ZGTX_FLASH.ld" --specs=nosys.specs -Wl,-Map="LoraWanAPP.map" -Wl,--gc-sections -static --specs=nano.specs -mfpu=fpv5-d16 -mfloat-abi=hard -mthumb -Wl,--start-group -lc -lm -Wl,--end-group
 	@echo 'Finished building target: $@'
 	@echo ' '
 

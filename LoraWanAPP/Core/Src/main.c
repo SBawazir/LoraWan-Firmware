@@ -42,6 +42,7 @@
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
+ADC_HandleTypeDef hadc1;
 
 UART_HandleTypeDef huart3;
 UART_HandleTypeDef huart6;
@@ -53,7 +54,16 @@ UART_HandleTypeDef huart6;
 uint8_t rxBuf[RXBUF_SIZE];
 uint16_t rxIndex = 0;
 uint8_t rxByte;
-uint8_t joined = 0;  // flag after join success
+
+volatile uint8_t joined = 0;  // flag after join success
+
+
+#define ADC_SAMPLES 10
+uint16_t ADC_VAL[ADC_SAMPLES];
+volatile uint8_t adc_index = 0;
+volatile uint8_t adc_ready_flag = 0;
+uint32_t adc_avg = 0;
+
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -62,6 +72,7 @@ static void MPU_Config(void);
 static void MX_GPIO_Init(void);
 static void MX_USART3_UART_Init(void);
 static void MX_USART6_UART_Init(void);
+static void MX_ADC1_Init(void);
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
@@ -69,9 +80,25 @@ static void MX_USART6_UART_Init(void);
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 
+
+
+int value = 0;
+
+
+
+long map(long x, long in_min, long in_max, long out_min, long out_max)
+{
+	return (x - in_min) * (out_max - out_min + 1) / (in_max - in_min + 1) + out_min;
+}
+
+
+
+
+
 void logMessage(const char *msg)
 {
-    HAL_UART_Transmit(&huart3, (uint8_t*)msg, strlen(msg), HAL_MAX_DELAY);
+	  HAL_UART_Transmit(&huart3, (uint8_t*)msg, strlen(msg), HAL_MAX_DELAY);
+
 }
 
 void sendCommand(const char *cmd)
@@ -130,6 +157,47 @@ void sendLoRaData(const char *asciiData)
 }
 
 
+
+
+void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef *hadc)
+{
+    if (hadc->Instance == ADC1)
+    {
+        ADC_VAL[adc_index++] = HAL_ADC_GetValue(hadc);
+
+        if (adc_index < ADC_SAMPLES)
+        {
+            // Start next sample — still within this 10-sample burst
+            HAL_ADC_Start_IT(hadc);
+        }
+        else
+        {
+            // Done capturing 10 samples
+            uint32_t sum = 0;
+            for (uint8_t i = 0; i < ADC_SAMPLES; i++)
+                sum += ADC_VAL[i];
+
+            adc_avg = sum / ADC_SAMPLES;
+            adc_index = 0;
+            adc_ready_flag = 1;
+        }
+    }
+}
+
+
+void sendADCData(void)
+{
+    char debugMsg[64];
+    sprintf(debugMsg, "Raw ADC average: %lu\r\n", adc_avg);
+    logMessage(debugMsg);
+
+    char cmd[64];
+    sprintf(cmd, "AT+SEND=2:%04lX\r\n", adc_avg);
+    sendCommand(cmd);
+}
+
+
+
 /* USER CODE END 0 */
 
 /**
@@ -166,53 +234,72 @@ int main(void)
   MX_GPIO_Init();
   MX_USART3_UART_Init();
   MX_USART6_UART_Init();
+  MX_ADC1_Init();
   /* USER CODE BEGIN 2 */
 
-  HAL_UART_Transmit(&huart3, (uint8_t*)"System Ready\r\n", 14, HAL_MAX_DELAY);
-  HAL_UART_Receive_IT(&huart6, &rxByte, 1);
+  HAL_NVIC_SetPriority(ADC_IRQn, 1, 0);
+  HAL_NVIC_EnableIRQ(ADC_IRQn);
 
 
-  HAL_Delay(3000);	// wait for RAK3172 boot
+      HAL_UART_Transmit(&huart3, (uint8_t*)"System Ready\r\n", 14, HAL_MAX_DELAY);
 
-  // --- LoRaWAN Configuration ---
-  	sendCommand("AT+BAND=?\r\n"); // AS923
-  	HAL_Delay(1000);
-  	sendCommand("AT+NWM=1\r\n");       // LoRaWAN mode
-  	HAL_Delay(1000);
-    sendCommand("AT+NJM=1\r\n");       // OTAA join
-    HAL_Delay(1000);
-    sendCommand("AT+CLASS=A\r\n");     // Class A
-    HAL_Delay(1000);
+      logMessage("Starting ADC interrupt...\r\n");
+
+      HAL_ADC_Start_IT(&hadc1);
+
+      logMessage("ADC started OK\r\n");
 
 
-    // Replace with your own keys!
-    sendCommand("AT+DEVEUI=?\r\n");    // Check device EUI
-    HAL_Delay(1000);
-    sendCommand("AT+APPEUI=b63685fe4b7c7f46\r\n");  // Example - replace
-    HAL_Delay(1000);
-    sendCommand("AT+APPKEY=d057c9f601999ebf0d9936248029947c\r\n"); // Example - replace
-    HAL_Delay(1000);
+      HAL_UART_Receive_IT(&huart6, &rxByte, 1);
 
-    // --- Join network ---
-    sendCommand("AT+JOIN=1:0:10:8\r\n");
-    logMessage("Waiting for join...\r\n");
 
-    // Wait for join success
+      HAL_Delay(3000);	// wait for RAK3172 boot
 
-    uint32_t start = HAL_GetTick();
-    while (!joined && (HAL_GetTick() - start < 60000))  // 60s timeout
-    {
-        HAL_Delay(100);
-    }
+    // --- LoRaWAN Configuration ---
+      sendCommand("AT+BAND=?\r\n"); // AS923
+      HAL_Delay(1000);
+      sendCommand("AT+NWM=1\r\n");       // LoRaWAN mode
+      HAL_Delay(1000);
+      sendCommand("AT+NJM=1\r\n");       // OTAA join
+      HAL_Delay(1000);
+      sendCommand("AT+CLASS=A\r\n");     // Class A
+      HAL_Delay(1000);
 
-    if (joined)
-        logMessage("Joined network successfully!\r\n");
-    else
-    {
-        logMessage("Join failed or timed out.\r\n");
-        // wait for module to be ready before retry
-        HAL_Delay(5000);
-    }
+
+      // Replace with your own keys!
+      sendCommand("AT+DEVEUI=?\r\n");    // Check device EUI
+      HAL_Delay(1000);
+      sendCommand("AT+APPEUI=0c288df05ab4bbc2\r\n");  // Example - replace
+      HAL_Delay(1000);
+      sendCommand("AT+APPKEY=95aef87ec884b56d3c5c25ca256e426c\r\n"); // Example - replace
+      HAL_Delay(1000);
+
+      // --- Join network ---
+      sendCommand("AT+JOIN=1:0:10:8\r\n");
+      logMessage("Waiting for join...\r\n");
+
+      // Wait for join success
+
+      uint32_t start = HAL_GetTick();
+      while (!joined && (HAL_GetTick() - start < 60000))  // 60s timeout
+      {
+          HAL_Delay(100);
+      }
+
+      if (joined)
+          logMessage("Joined network successfully!\r\n");
+      else
+      {
+          logMessage("Join failed or timed out.\r\n");
+          // wait for module to be ready before retry
+          HAL_Delay(5000);
+      }
+
+
+
+
+
+  /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
@@ -222,10 +309,22 @@ int main(void)
 
     /* USER CODE BEGIN 3 */
 
+//	  value = map(ADC_VAL[0], 10000, 65535, 0, 100);
+
 	  if (joined)
 	  {
-	      sendLoRaData("Hello from Node2");
-	      HAL_Delay(10000); // send every 10s
+
+//		  sendLoRaData("Hello from Node2");
+//		  HAL_Delay(10000); // send every 10s
+
+		  if(adc_ready_flag){
+	      adc_ready_flag = 0; // reset flag
+	      sendADCData();   // send the ADC reading
+		  HAL_Delay(5000); // every 10s
+
+		  // Start a new ADC burst (10 samples)
+		  HAL_ADC_Start_IT(&hadc1);
+		  }
 	  }
 	  else
 	  {
@@ -233,6 +332,8 @@ int main(void)
 	      sendCommand("AT+JOIN=1:0:10:8\r\n");
 	      HAL_Delay(30000);
 	  }
+
+
 
   }
   /* USER CODE END 3 */
@@ -253,7 +354,7 @@ void SystemClock_Config(void)
 
   /** Configure the main internal regulator output voltage
   */
-  __HAL_PWR_VOLTAGESCALING_CONFIG(PWR_REGULATOR_VOLTAGE_SCALE2);
+  __HAL_PWR_VOLTAGESCALING_CONFIG(PWR_REGULATOR_VOLTAGE_SCALE1);
 
   while(!__HAL_PWR_GET_FLAG(PWR_FLAG_VOSRDY)) {}
 
@@ -285,16 +386,85 @@ void SystemClock_Config(void)
                               |RCC_CLOCKTYPE_D3PCLK1|RCC_CLOCKTYPE_D1PCLK1;
   RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
   RCC_ClkInitStruct.SYSCLKDivider = RCC_SYSCLK_DIV1;
-  RCC_ClkInitStruct.AHBCLKDivider = RCC_HCLK_DIV2;
+  RCC_ClkInitStruct.AHBCLKDivider = RCC_HCLK_DIV1;
   RCC_ClkInitStruct.APB3CLKDivider = RCC_APB3_DIV2;
   RCC_ClkInitStruct.APB1CLKDivider = RCC_APB1_DIV2;
   RCC_ClkInitStruct.APB2CLKDivider = RCC_APB2_DIV2;
   RCC_ClkInitStruct.APB4CLKDivider = RCC_APB4_DIV2;
 
-  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_1) != HAL_OK)
+  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_2) != HAL_OK)
   {
     Error_Handler();
   }
+}
+
+/**
+  * @brief ADC1 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_ADC1_Init(void)
+{
+
+  /* USER CODE BEGIN ADC1_Init 0 */
+
+  /* USER CODE END ADC1_Init 0 */
+
+  ADC_MultiModeTypeDef multimode = {0};
+  ADC_ChannelConfTypeDef sConfig = {0};
+
+  /* USER CODE BEGIN ADC1_Init 1 */
+
+  /* USER CODE END ADC1_Init 1 */
+
+  /** Common config
+  */
+  hadc1.Instance = ADC1;
+  hadc1.Init.ClockPrescaler = ADC_CLOCK_ASYNC_DIV1;
+  hadc1.Init.Resolution = ADC_RESOLUTION_16B;
+  hadc1.Init.ScanConvMode = ADC_SCAN_DISABLE;
+  hadc1.Init.EOCSelection = ADC_EOC_SINGLE_CONV;
+  hadc1.Init.LowPowerAutoWait = DISABLE;
+  hadc1.Init.ContinuousConvMode = DISABLE;
+  hadc1.Init.NbrOfConversion = 1;
+  hadc1.Init.DiscontinuousConvMode = DISABLE;
+  hadc1.Init.ExternalTrigConv = ADC_SOFTWARE_START;
+  hadc1.Init.ExternalTrigConvEdge = ADC_EXTERNALTRIGCONVEDGE_NONE;
+  hadc1.Init.ConversionDataManagement = ADC_CONVERSIONDATA_DR;
+  hadc1.Init.Overrun = ADC_OVR_DATA_PRESERVED;
+  hadc1.Init.LeftBitShift = ADC_LEFTBITSHIFT_NONE;
+  hadc1.Init.OversamplingMode = DISABLE;
+  hadc1.Init.Oversampling.Ratio = 1;
+  if (HAL_ADC_Init(&hadc1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure the ADC multi-mode
+  */
+  multimode.Mode = ADC_MODE_INDEPENDENT;
+  if (HAL_ADCEx_MultiModeConfigChannel(&hadc1, &multimode) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure Regular Channel
+  */
+  sConfig.Channel = ADC_CHANNEL_15;
+  sConfig.Rank = ADC_REGULAR_RANK_1;
+  sConfig.SamplingTime = ADC_SAMPLETIME_810CYCLES_5;
+  sConfig.SingleDiff = ADC_SINGLE_ENDED;
+  sConfig.OffsetNumber = ADC_OFFSET_NONE;
+  sConfig.Offset = 0;
+  sConfig.OffsetSignedSaturation = DISABLE;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN ADC1_Init 2 */
+
+  /* USER CODE END ADC1_Init 2 */
+
 }
 
 /**
@@ -407,13 +577,13 @@ static void MX_GPIO_Init(void)
 
   /* GPIO Ports Clock Enable */
   __HAL_RCC_GPIOC_CLK_ENABLE();
+  __HAL_RCC_GPIOA_CLK_ENABLE();
   __HAL_RCC_GPIOB_CLK_ENABLE();
   __HAL_RCC_GPIOD_CLK_ENABLE();
-  __HAL_RCC_GPIOA_CLK_ENABLE();
   __HAL_RCC_GPIOE_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOB, LED_GREEN_Pin|LED_RED_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(LED_RED_GPIO_Port, LED_RED_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(LED_YELLOW_GPIO_Port, LED_YELLOW_Pin, GPIO_PIN_RESET);
@@ -424,12 +594,12 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(B1_GPIO_Port, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : LED_GREEN_Pin LED_RED_Pin */
-  GPIO_InitStruct.Pin = LED_GREEN_Pin|LED_RED_Pin;
+  /*Configure GPIO pin : LED_RED_Pin */
+  GPIO_InitStruct.Pin = LED_RED_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+  HAL_GPIO_Init(LED_RED_GPIO_Port, &GPIO_InitStruct);
 
   /*Configure GPIO pin : LED_YELLOW_Pin */
   GPIO_InitStruct.Pin = LED_YELLOW_Pin;
