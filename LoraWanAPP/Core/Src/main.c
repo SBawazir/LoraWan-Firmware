@@ -23,6 +23,7 @@
 /* USER CODE BEGIN Includes */
 #include "string.h"
 #include <stdio.h>
+#include <stdlib.h>
 
 /* USER CODE END Includes */
 
@@ -92,6 +93,27 @@ long map(long x, long in_min, long in_max, long out_min, long out_max)
 }
 
 
+void hexToAscii(const char *hex, char *ascii)
+{
+    while (*hex && *(hex + 1))
+    {
+        char byte[3] = { hex[0], hex[1], '\0' };
+        *ascii++ = (char)strtol(byte, NULL, 16);
+        hex += 2;
+    }
+    *ascii = '\0';
+}
+
+void asciiToHex(const char *ascii, char *hex)
+{
+    while (*ascii)
+    {
+        sprintf(hex, "%02X", (unsigned char)*ascii);
+        hex += 2;
+        ascii++;
+    }
+    *hex = '\0';
+}
 
 
 
@@ -110,6 +132,43 @@ void sendCommand(const char *cmd)
     HAL_UART_Transmit(&huart6, (uint8_t*)cmd, strlen(cmd), HAL_MAX_DELAY);
 }
 
+
+void handleDownlink(char *response)
+{
+    // Example response: "+EVT:RX_1,PORT:2,RSSI:-80,SNR:9,LEN:04"
+    //                   "+EVT:RX_DATA:48656C6C6F"  -> "Hello"
+
+    if (strstr(response, "+EVT:RX_DATA:"))
+    {
+        char *dataPtr = strstr(response, "+EVT:RX_DATA:") + strlen("+EVT:RX_DATA:");
+        char hexPayload[128];
+        char asciiPayload[64];
+
+        strcpy(hexPayload, dataPtr);
+
+        // Remove newline
+        char *newline = strchr(hexPayload, '\r');
+        if (newline) *newline = '\0';
+        newline = strchr(hexPayload, '\n');
+        if (newline) *newline = '\0';
+
+        // Convert hex → ASCII
+        hexToAscii(hexPayload, asciiPayload);
+
+        char msg[128];
+        sprintf(msg, "Received downlink: [%s]\r\n", asciiPayload);
+        logMessage(msg);
+
+        // Example: if gateway sends “LEDON” or “LEDOFF”
+        if (strstr(asciiPayload, "LEDON"))
+            HAL_GPIO_WritePin(LED_YELLOW_GPIO_Port, LED_YELLOW_Pin, GPIO_PIN_SET);
+        else if (strstr(asciiPayload, "LEDOFF"))
+            HAL_GPIO_WritePin(LED_YELLOW_GPIO_Port, LED_YELLOW_Pin, GPIO_PIN_RESET);
+    }
+}
+
+
+
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 {
     if (huart == &huart6)
@@ -121,6 +180,7 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
             if (rxByte == '\n') // end of line
             {
                 rxBuf[rxIndex] = '\0';
+
                 logMessage("<<< Response: ");
                 logMessage((char*)rxBuf);
                 logMessage("\r\n");
@@ -129,23 +189,26 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
                 if (strstr((char*)rxBuf, "+EVT:JOINED"))
                     joined = 1;
 
-                rxIndex = 0;
+                // detect downlink (RX)
+                if (strstr((char*)rxBuf, "+EVT:RX"))
+                {
+                    handleDownlink((char*)rxBuf);
+                }
+
+                rxIndex = 0; // reset buffer for next line
             }
         }
+
+        // continue receiving next byte
         HAL_UART_Receive_IT(&huart6, &rxByte, 1);
     }
 }
 
-void asciiToHex(const char *ascii, char *hex)
-{
-    while (*ascii)
-    {
-        sprintf(hex, "%02X", (unsigned char)*ascii);
-        hex += 2;
-        ascii++;
-    }
-    *hex = '\0';
-}
+
+
+
+
+
 
 void sendLoRaData(const char *asciiData)
 {
@@ -320,7 +383,7 @@ int main(void)
 		  if(adc_ready_flag){
 	      adc_ready_flag = 0; // reset flag
 	      sendADCData();   // send the ADC reading
-		  HAL_Delay(5000); // every 10s
+	      HAL_Delay(5000); // every 10s
 
 		  // Start a new ADC burst (10 samples)
 		  HAL_ADC_Start_IT(&hadc1);
