@@ -135,36 +135,45 @@ void sendCommand(const char *cmd)
 
 void handleDownlink(char *response)
 {
-    // Example response: "+EVT:RX_1,PORT:2,RSSI:-80,SNR:9,LEN:04"
-    //                   "+EVT:RX_DATA:48656C6C6F"  -> "Hello"
 
-    if (strstr(response, "+EVT:RX_DATA:"))
-    {
-        char *dataPtr = strstr(response, "+EVT:RX_DATA:") + strlen("+EVT:RX_DATA:");
-        char hexPayload[128];
-        char asciiPayload[64];
+		char hexPayload[128];
+	    char asciiPayload[64];
 
-        strcpy(hexPayload, dataPtr);
+	    // Format 1: +EVT:RX_DATA:HEXDATA
+	    if (strstr(response, "+EVT:RX_DATA:"))
+	    {
+	        char *p = strstr(response, "+EVT:RX_DATA:") + strlen("+EVT:RX_DATA:");
+	        strcpy(hexPayload, p);
+	    }
+	    // Format 2: +0:UNICAST:PORT:HEXDATA
+	    else if (strstr(response, "UNICAST"))
+	    {
+	        char *p = strchr(response, ':'); // skip +0
+	        p = strchr(p + 1, ':');         // skip UNICAST
+	        p = strchr(p + 1, ':') + 1;     // now pointing at HEXDATA
+	        strcpy(hexPayload, p);
+	    }
+	    else
+	        return;
 
-        // Remove newline
-        char *newline = strchr(hexPayload, '\r');
-        if (newline) *newline = '\0';
-        newline = strchr(hexPayload, '\n');
-        if (newline) *newline = '\0';
+	    // remove CR/LF
+	    char *newline = strpbrk(hexPayload, "\r\n");
+	    if (newline) *newline = '\0';
 
-        // Convert hex → ASCII
-        hexToAscii(hexPayload, asciiPayload);
+	    // Convert hex → ASCII
+	    hexToAscii(hexPayload, asciiPayload);
 
-        char msg[128];
-        sprintf(msg, "Received downlink: [%s]\r\n", asciiPayload);
-        logMessage(msg);
+	    char msg[128];
+	    sprintf(msg, "Received downlink: [%s]\r\n", asciiPayload);
+	    logMessage(msg);
 
-        // Example: if gateway sends “LEDON” or “LEDOFF”
-        if (strstr(asciiPayload, "LEDON"))
-            HAL_GPIO_WritePin(LED_YELLOW_GPIO_Port, LED_YELLOW_Pin, GPIO_PIN_SET);
-        else if (strstr(asciiPayload, "LEDOFF"))
-            HAL_GPIO_WritePin(LED_YELLOW_GPIO_Port, LED_YELLOW_Pin, GPIO_PIN_RESET);
-    }
+	    // Example action for LED control
+	    if (strstr(asciiPayload, "LEDON"))
+	        HAL_GPIO_WritePin(LED_YELLOW_GPIO_Port, LED_YELLOW_Pin, GPIO_PIN_SET);
+
+	    if (strstr(asciiPayload, "LEDOFF"))
+	        HAL_GPIO_WritePin(LED_YELLOW_GPIO_Port, LED_YELLOW_Pin, GPIO_PIN_RESET);
+
 }
 
 
@@ -190,7 +199,7 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
                     joined = 1;
 
                 // detect downlink (RX)
-                if (strstr((char*)rxBuf, "+EVT:RX"))
+                if (strstr((char*)rxBuf, "+EVT:RX") ||strstr((char*)rxBuf, "UNICAST"))
                 {
                     handleDownlink((char*)rxBuf);
                 }
