@@ -58,6 +58,10 @@ uint8_t rxByte;
 
 volatile uint8_t joined = 0;  // flag after join success
 
+/* New: queue received line for main to log */
+volatile uint8_t rx_line_ready = 0;
+char rx_line[RXBUF_SIZE];
+
 
 #define ADC_SAMPLES 10
 uint16_t ADC_VAL[ADC_SAMPLES];
@@ -180,38 +184,50 @@ void handleDownlink(char *response)
 
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 {
-    if (huart == &huart6)
-    {
-        if (rxIndex < RXBUF_SIZE - 1)
-        {
-            rxBuf[rxIndex++] = rxByte;
-
-            if (rxByte == '\n') // end of line
-            {
-                rxBuf[rxIndex] = '\0';
-
-                logMessage("<<< Response: ");
-                logMessage((char*)rxBuf);
-                logMessage("\r\n");
-
-                // detect join success
-                if (strstr((char*)rxBuf, "+EVT:JOINED"))
-                    joined = 1;
-
-                // detect downlink (RX)
-                if (strstr((char*)rxBuf, "+EVT:RX") ||strstr((char*)rxBuf, "UNICAST"))
-                {
-                    handleDownlink((char*)rxBuf);
-                }
-
-                rxIndex = 0; // reset buffer for next line
-            }
-        }
-
-        // continue receiving next byte
-        HAL_UART_Receive_IT(&huart6, &rxByte, 1);
-    }
+	if (huart->Instance == USART6)
+	    {
+	        HAL_UART_Transmit(&huart3, (uint8_t*)"INT\r\n", 5, HAL_MAX_DELAY);
+	        HAL_UART_Receive_IT(&huart6, &rxByte, 1);
+	    }
 }
+
+//void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
+//{
+//    if (huart == &huart6)
+//    {
+//        if (rxIndex < RXBUF_SIZE - 1)
+//        {
+//            rxBuf[rxIndex++] = rxByte;
+//
+//            if (rxByte == '\n') // end of line
+//            {
+//
+//            	rxBuf[rxIndex] = '\0';
+//
+//                // Copy line to a simple queue buffer for main to log/process
+//                // keep it short and simple inside IRQ
+//                strncpy((char*)rx_line, (char*)rxBuf, RXBUF_SIZE-1);
+//                rx_line[RXBUF_SIZE-1] = '\0';
+//                rx_line_ready = 1; // main will process
+//
+//                // detect join success (we can still set small flags)
+//                if (strstr((char*)rxBuf, "+EVT:JOINED"))
+//                    joined = 1;
+//
+//                // detect downlink (RX) — instead of handling fully here, set a flag
+//                // and process in main to avoid complex work inside IRQ.
+//                // We still set rx_line_ready so main will call handleDownlink() too.
+//
+//                rxIndex = 0; // reset buffer for next line
+//
+//
+//            }
+//        }
+//
+//        // continue receiving next byte
+//        HAL_UART_Receive_IT(&huart6, &rxByte, 1);
+//    }
+//}
 
 
 
@@ -312,6 +328,11 @@ int main(void)
   HAL_NVIC_SetPriority(ADC_IRQn, 1, 0);
   HAL_NVIC_EnableIRQ(ADC_IRQn);
 
+  logMessage("Starting UART6 receive interrupt...\r\n");
+    if (HAL_UART_Receive_IT(&huart6, &rxByte, 1) != HAL_OK)
+        logMessage("UART6 receive start failed!\r\n");
+    else
+        logMessage("UART6 receive started successfully.\r\n");
 
       HAL_UART_Transmit(&huart3, (uint8_t*)"System Ready\r\n", 14, HAL_MAX_DELAY);
 
@@ -383,20 +404,49 @@ int main(void)
 
 //	  value = map(ADC_VAL[0], 10000, 65535, 0, 100);
 
+	  // First: handle any queued UART lines (previously avoided inside IRQ)
+	     if (rx_line_ready)
+	     {
+	         // process the copied line in rx_line
+	         // print raw response
+	         logMessage("<<< Response: ");
+	         logMessage(rx_line);
+	         logMessage("\r\n");
+
+	         // detect downlink or join again and call existing handler
+             if (strstr(rx_line, "+EVT:JOINED"))
+	             joined = 1;
+
+	         if (strstr(rx_line, "+EVT:RX") || strstr(rx_line, "UNICAST"))
+	             handleDownlink(rx_line);
+
+	         // clear flag
+	         rx_line_ready = 0;
+      }
+
 	  if (joined)
 	  {
+		  // copy adc data atomically to avoid race with IRQ
+		    uint32_t local_adc_avg;
+		    __disable_irq();
+		    local_adc_avg = adc_avg;
+		    adc_ready_flag = 0; // reset
+		    __enable_irq();
 
-//		  sendLoRaData("Hello from Node2");
-//		  HAL_Delay(10000); // send every 10s
+		    // send using local copy
+		    char debugMsg[64];
+		    sprintf(debugMsg, "Raw ADC average: %lu\r\n", local_adc_avg);
+		    logMessage(debugMsg);
 
-		  if(adc_ready_flag){
-	      adc_ready_flag = 0; // reset flag
-	      sendADCData();   // send the ADC reading
-	      HAL_Delay(5000); // every 10s
+		    char cmd[64];
+		    sprintf(cmd, "AT+SEND=2:%04lX\r\n", (unsigned long)local_adc_avg);
+		    sendCommand(cmd);
 
-		  // Start a new ADC burst (10 samples)
-		  HAL_ADC_Start_IT(&hadc1);
-		  }
+		    HAL_Delay(1000);
+
+		    // Start a new ADC burst (10 samples)
+	        HAL_ADC_Start_IT(&hadc1);
+
 	  }
 	  else
 	  {
