@@ -52,8 +52,8 @@ UART_HandleTypeDef huart6;
 #define RXBUF_SIZE 512
 #define CMD_TIMEOUT 2000  // ms
 
-uint8_t rxBuf[RXBUF_SIZE];
-uint16_t rxIndex = 0;
+volatile uint8_t rxBuf[RXBUF_SIZE];
+volatile uint16_t rxIndex = 0;
 uint8_t rxByte;
 
 volatile uint8_t joined = 0;  // flag after join success
@@ -61,6 +61,7 @@ volatile uint8_t joined = 0;  // flag after join success
 /* New: queue received line for main to log */
 volatile uint8_t rx_line_ready = 0;
 char rx_line[RXBUF_SIZE];
+volatile uint32_t rx_bytes_total = 0; // add near your globals
 
 
 #define ADC_SAMPLES 10
@@ -171,25 +172,132 @@ void handleDownlink(char *response)
 	    sprintf(msg, "Received downlink: [%s]\r\n", asciiPayload);
 	    logMessage(msg);
 
-	    // Example action for LED control
-	    if (strstr(asciiPayload, "LEDON"))
-	        HAL_GPIO_WritePin(LED_YELLOW_GPIO_Port, LED_YELLOW_Pin, GPIO_PIN_SET);
-
-	    if (strstr(asciiPayload, "LEDOFF"))
-	        HAL_GPIO_WritePin(LED_YELLOW_GPIO_Port, LED_YELLOW_Pin, GPIO_PIN_RESET);
 
 }
 
-
+//void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
+//{
+//    if (huart == &huart6)
+//    {
+//        logMessage("Byte received: ");
+//        char b[2] = {rxByte, 0};
+//        logMessage(b);
+//        logMessage("\r\n");
+//
+//        HAL_UART_Receive_IT(&huart6, &rxByte, 1);
+//    }
+//}
 
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 {
-	if (huart->Instance == USART6)
-	    {
-	        HAL_UART_Transmit(&huart3, (uint8_t*)"INT\r\n", 5, HAL_MAX_DELAY);
-	        HAL_UART_Receive_IT(&huart6, &rxByte, 1);
-	    }
+    if (huart == &huart6)
+    {
+        if (rxIndex < RXBUF_SIZE - 1)
+        {
+            if (rxByte != '\r')       // skip carriage return
+                rxBuf[rxIndex++] = rxByte;
+
+            if (rxByte == '\n')       // end of line
+            {
+                rxBuf[rxIndex-1] = '\0';   // terminate string before '\n'
+                strncpy((char*)rx_line, (char*)rxBuf, RXBUF_SIZE-1);
+                rx_line[RXBUF_SIZE-1] = '\0';
+                rx_line_ready = 1;
+                rxIndex = 0; // reset buffer
+            }
+        }
+        else
+        {
+            rxIndex = 0; // safety reset on overflow
+        }
+
+        // Continue receiving next byte
+        HAL_UART_Receive_IT(&huart6, &rxByte, 1);
+    }
 }
+
+//void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
+//{
+//    if (huart == &huart6)
+//    {
+//        logMessage("Byte received: ");
+//        char b[2] = {rxByte, 0};
+//        logMessage(b);
+//        logMessage("\r\n");
+//
+//        HAL_UART_Receive_IT(&huart6, &rxByte, 1);
+//    }
+//}
+
+//void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
+//{
+//    if (huart->Instance == USART6)
+//    {
+//        uint8_t b = rxByte;
+//
+//        if (b == '\r')
+//        {
+//            // ignore CR
+//        }
+//        else if (b == '\n')
+//        {
+//            // terminate line
+//            rxBuf[rxIndex] = '\0';
+//
+//            // copy safely for main loop
+//            strncpy((char*)rx_line, (char*)rxBuf, RXBUF_SIZE - 1);
+//            rx_line[RXBUF_SIZE - 1] = '\0';
+//
+//            rx_line_ready = 1;   // signal main loop
+//            rxIndex = 0;         // reset for next line
+//        }
+//        else
+//        {
+//            if (rxIndex < RXBUF_SIZE - 1)
+//                rxBuf[rxIndex++] = b;
+//        }
+//
+//        // re-arm immediately
+//        HAL_UART_Receive_IT(&huart6, &rxByte, 1);
+//    }
+//}
+
+//void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
+//{
+//    if (huart == &huart6)
+//    {
+//        if (rxIndex < RXBUF_SIZE - 1)
+//        {
+//            if (rxByte == '\r')
+//            {
+//                // Ignore carriage return
+//            }
+//            else if (rxByte == '\n')
+//            {
+//                rxBuf[rxIndex] = '\0'; // terminate string
+//                strncpy((char*)rx_line, (char*)rxBuf, RXBUF_SIZE-1);
+//                rx_line[RXBUF_SIZE-1] = '\0';
+//                rx_line_ready = 1;
+//
+//                if (strstr((char*)rxBuf, "+EVT:JOINED"))
+//                    joined = 1;
+//
+//                rxIndex = 0; // reset buffer
+//            }
+//            else
+//            {
+//                rxBuf[rxIndex++] = rxByte;
+//            }
+//        }
+//        else
+//        {
+//            rxIndex = 0; // overflow safety
+//        }
+//
+//        // Continue receiving
+//        HAL_UART_Receive_IT(&huart6, &rxByte, 1);
+//    }
+//}
 
 //void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 //{
@@ -362,9 +470,9 @@ int main(void)
       // Replace with your own keys!
       sendCommand("AT+DEVEUI=?\r\n");    // Check device EUI
       HAL_Delay(1000);
-      sendCommand("AT+APPEUI=0c288df05ab4bbc2\r\n");  // Example - replace
+      sendCommand("AT+APPEUI=9fea10f39807ba65\r\n");  // Example - replace
       HAL_Delay(1000);
-      sendCommand("AT+APPKEY=95aef87ec884b56d3c5c25ca256e426c\r\n"); // Example - replace
+      sendCommand("AT+APPKEY=b60760e86425b30c14ac4d6042cb4d72\r\n"); // Example - replace
       HAL_Delay(1000);
 
       // --- Join network ---
@@ -404,6 +512,7 @@ int main(void)
 
 //	  value = map(ADC_VAL[0], 10000, 65535, 0, 100);
 
+
 	  // First: handle any queued UART lines (previously avoided inside IRQ)
 	     if (rx_line_ready)
 	     {
@@ -413,6 +522,8 @@ int main(void)
 	         logMessage(rx_line);
 	         logMessage("\r\n");
 
+
+
 	         // detect downlink or join again and call existing handler
              if (strstr(rx_line, "+EVT:JOINED"))
 	             joined = 1;
@@ -420,8 +531,9 @@ int main(void)
 	         if (strstr(rx_line, "+EVT:RX") || strstr(rx_line, "UNICAST"))
 	             handleDownlink(rx_line);
 
-	         // clear flag
+
 	         rx_line_ready = 0;
+
       }
 
 	  if (joined)
